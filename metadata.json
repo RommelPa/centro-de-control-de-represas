@@ -1,0 +1,5 @@
+{
+  "name": "Centro de Control de Represas",
+  "description": "Dashboard hidrológico y energético con backend Node.js, visualización React y análisis de IA Gemini.",
+  "requestFramePermissions": []
+}
