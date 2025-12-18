@@ -1,26 +1,11 @@
 const express = require('express');
+const { z } = require('zod');
 const router = express.Router();
 const { poolPromise, sql } = require('../db/pool');
 const { GoogleGenAI } = require('@google/genai');
 
 // --- UTILS ---
 const formatData = (recordset) => ({ ok: true, data: recordset });
-
-const formatError = (res, err) => {
-  // Dev-friendly error details (no stack to client)
-  console.error('❌ API ERROR:', err);
-
-  const details =
-    err?.originalError?.info?.message ||
-    err?.message ||
-    String(err);
-
-  res.status(500).json({
-    ok: false,
-    error: 'Internal Server Error',
-    details,
-  });
-};
 
 const isISODate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
 const parseISODate = (s) => {
@@ -33,17 +18,18 @@ const daysBetweenInclusive = (a, b) => {
   return Math.floor(ms / (24 * 3600 * 1000)) + 1;
 };
 
-const requireDateRange = (req, res) => {
-  const { fecha_ini, fecha_fin } = req.query;
+const requireDateRange = (fecha_ini, fecha_fin, next) => {
   const d1 = parseISODate(fecha_ini);
   const d2 = parseISODate(fecha_fin);
   if (!d1 || !d2) {
-    res.status(400).json({ ok: false, error: 'fecha_ini y fecha_fin son requeridas (YYYY-MM-DD)' });
-    return null;
+    const err = new Error('fecha_ini y fecha_fin son requeridas (YYYY-MM-DD)');
+    err.status = 400;
+    return next(err);
   }
   if (d1 > d2) {
-    res.status(400).json({ ok: false, error: 'fecha_ini debe ser <= fecha_fin' });
-    return null;
+    const err = new Error('fecha_ini debe ser <= fecha_fin');
+    err.status = 400;
+    return next(err);
   }
   return { d1, d2 };
 };
@@ -51,8 +37,8 @@ const requireDateRange = (req, res) => {
 const isCsvNums = (s) => !s || /^[0-9]+(,[0-9]+)*$/.test(String(s).trim());
 
 // Auto-downsample to keep responses fast and charts usable
-const normalizeGranularity = (req, rangeDays) => {
-  const g = String(req.query.granularity || '').toLowerCase().trim();
+const normalizeGranularity = (params, rangeDays) => {
+  const g = String(params?.granularity || '').toLowerCase().trim();
   if (g === 'day' || g === 'week' || g === 'month') return g;
   // Auto mode
   if (rangeDays > 365) return 'month';
@@ -75,19 +61,35 @@ const cacheSet = (key, val, ttlMs = 5 * 60 * 1000) => {
   cache.set(key, { val, exp: Date.now() + ttlMs });
 };
 
+const validate = (schema, data, next) => {
+  const parsed = schema.safeParse(data);
+  if (!parsed.success) {
+    const err = new Error('Parámetros inválidos');
+    err.status = 400;
+    err.details = parsed.error.format();
+    next(err);
+    return null;
+  }
+  return parsed.data;
+};
+
+const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const csvNumberSchema = z.string().regex(/^[0-9]+(,[0-9]+)*$/);
+
 // --- HEALTH ---
-router.get('/health', async (req, res) => {
+router.get('/health', async (req, res, next) => {
   try {
     const pool = await poolPromise;
     await pool.request().query('SELECT 1');
     res.json({ ok: true, data: { status: 'OK', db: 'Connected' } });
   } catch (err) {
-    res.status(503).json({ ok: false, error: 'DB Disconnected' });
+    err.status = 503;
+    next(err);
   }
 });
 
 // --- METADATA ---
-router.get('/meta/represas', async (req, res) => {
+router.get('/meta/represas', async (req, res, next) => {
   try {
     const key = 'meta:represas';
     const cached = cacheGet(key);
@@ -99,10 +101,10 @@ router.get('/meta/represas', async (req, res) => {
     );
     cacheSet(key, result.recordset);
     res.json(formatData(result.recordset));
-  } catch (err) { formatError(res, err); }
+  } catch (err) { next(err); }
 });
 
-router.get('/meta/centrales', async (req, res) => {
+router.get('/meta/centrales', async (req, res, next) => {
   try {
     const key = 'meta:centrales';
     const cached = cacheGet(key);
@@ -114,10 +116,10 @@ router.get('/meta/centrales', async (req, res) => {
     );
     cacheSet(key, result.recordset);
     res.json(formatData(result.recordset));
-  } catch (err) { formatError(res, err); }
+  } catch (err) { next(err); }
 });
 
-router.get('/meta/canales', async (req, res) => {
+router.get('/meta/canales', async (req, res, next) => {
   try {
     const key = 'meta:canales';
     const cached = cacheGet(key);
@@ -129,23 +131,32 @@ router.get('/meta/canales', async (req, res) => {
     );
     cacheSet(key, result.recordset);
     res.json(formatData(result.recordset));
-  } catch (err) { formatError(res, err); }
+  } catch (err) { next(err); }
 });
 
 // --- REPRESAS ---
-router.get('/represas/kpis', async (req, res) => {
-  const { fecha_ini, fecha_fin, represas } = req.query;
-  const dr = requireDateRange(req, res);
+router.get('/represas/kpis', async (req, res, next) => {
+  const parsed = validate(
+    z.object({
+      fecha_ini: dateSchema,
+      fecha_fin: dateSchema,
+      represas: csvNumberSchema.optional(),
+    }),
+    req.query,
+    next
+  );
+  if (!parsed) return;
+
+  const dr = requireDateRange(parsed.fecha_ini, parsed.fecha_fin, next);
   if (!dr) return;
-  if (!isCsvNums(represas)) return res.status(400).json({ ok: false, error: 'represas debe ser CSV numérico' });
 
   try {
     const pool = await poolPromise;
     const request = pool.request();
-    request.input('fecha_ini', sql.Date, fecha_ini);
-    request.input('fecha_fin', sql.Date, fecha_fin);
-    request.input('represas_csv', sql.VarChar, represas || '');
-    request.input('all_represas', sql.Bit, represas ? 0 : 1);
+    request.input('fecha_ini', sql.Date, parsed.fecha_ini);
+    request.input('fecha_fin', sql.Date, parsed.fecha_fin);
+    request.input('represas_csv', sql.VarChar, parsed.represas || '');
+    request.input('all_represas', sql.Bit, parsed.represas ? 0 : 1);
 
     // Optimizations:
     // - Find latest id_fecha in range once (uses dim_fecha(fecha) index)
@@ -188,28 +199,38 @@ router.get('/represas/kpis', async (req, res) => {
 
     const result = await request.query(query);
     res.json(formatData(result.recordset));
-  } catch (err) { formatError(res, err); }
+  } catch (err) { next(err); }
 });
 
-router.get('/represas/series', async (req, res) => {
-  const { fecha_ini, fecha_fin, represas, variables } = req.query;
-  const dr = requireDateRange(req, res);
+router.get('/represas/series', async (req, res, next) => {
+  const parsed = validate(
+    z.object({
+      fecha_ini: dateSchema,
+      fecha_fin: dateSchema,
+      represas: csvNumberSchema.optional(),
+      variables: csvNumberSchema.optional(),
+      granularity: z.enum(['day', 'week', 'month']).optional(),
+    }),
+    req.query,
+    next
+  );
+  if (!parsed) return;
+
+  const dr = requireDateRange(parsed.fecha_ini, parsed.fecha_fin, next);
   if (!dr) return;
-  if (!isCsvNums(represas)) return res.status(400).json({ ok: false, error: 'represas debe ser CSV numérico' });
-  if (!isCsvNums(variables)) return res.status(400).json({ ok: false, error: 'variables debe ser CSV numérico' });
 
   const rangeDays = daysBetweenInclusive(dr.d1, dr.d2);
-  const granularity = normalizeGranularity(req, rangeDays);
+  const granularity = normalizeGranularity({ query: parsed }, rangeDays);
 
   try {
     const pool = await poolPromise;
     const request = pool.request();
-    request.input('fecha_ini', sql.Date, fecha_ini);
-    request.input('fecha_fin', sql.Date, fecha_fin);
-    request.input('represas_csv', sql.VarChar, represas || '');
-    request.input('variables_csv', sql.VarChar, variables || '');
-    request.input('all_represas', sql.Bit, represas ? 0 : 1);
-    request.input('all_vars', sql.Bit, variables ? 0 : 1);
+    request.input('fecha_ini', sql.Date, parsed.fecha_ini);
+    request.input('fecha_fin', sql.Date, parsed.fecha_fin);
+    request.input('represas_csv', sql.VarChar, parsed.represas || '');
+    request.input('variables_csv', sql.VarChar, parsed.variables || '');
+    request.input('all_represas', sql.Bit, parsed.represas ? 0 : 1);
+    request.input('all_vars', sql.Bit, parsed.variables ? 0 : 1);
 
     const base = `
       WITH fechas AS (
@@ -296,29 +317,39 @@ router.get('/represas/series', async (req, res) => {
 
     const result = await request.query(query);
     res.json(formatData(result.recordset));
-  } catch (err) { formatError(res, err); }
+  } catch (err) { next(err); }
 });
 
 // --- CENTRALES ---
-router.get('/centrales/series', async (req, res) => {
-  const { fecha_ini, fecha_fin, centrales, variables } = req.query;
-  const dr = requireDateRange(req, res);
+router.get('/centrales/series', async (req, res, next) => {
+  const parsed = validate(
+    z.object({
+      fecha_ini: dateSchema,
+      fecha_fin: dateSchema,
+      centrales: csvNumberSchema.optional(),
+      variables: csvNumberSchema.optional(),
+      granularity: z.enum(['day', 'week', 'month']).optional(),
+    }),
+    req.query,
+    next
+  );
+  if (!parsed) return;
+
+  const dr = requireDateRange(parsed.fecha_ini, parsed.fecha_fin, next);
   if (!dr) return;
-  if (!isCsvNums(centrales)) return res.status(400).json({ ok: false, error: 'centrales debe ser CSV numérico' });
-  if (!isCsvNums(variables)) return res.status(400).json({ ok: false, error: 'variables debe ser CSV numérico' });
 
   const rangeDays = daysBetweenInclusive(dr.d1, dr.d2);
-  const granularity = normalizeGranularity(req, rangeDays);
+  const granularity = normalizeGranularity({ query: parsed }, rangeDays);
 
   try {
     const pool = await poolPromise;
     const request = pool.request();
-    request.input('fecha_ini', sql.Date, fecha_ini);
-    request.input('fecha_fin', sql.Date, fecha_fin);
-    request.input('centrales_csv', sql.VarChar, centrales || '');
-    request.input('variables_csv', sql.VarChar, variables || '');
-    request.input('all_centrales', sql.Bit, centrales ? 0 : 1);
-    request.input('all_vars', sql.Bit, variables ? 0 : 1);
+    request.input('fecha_ini', sql.Date, parsed.fecha_ini);
+    request.input('fecha_fin', sql.Date, parsed.fecha_fin);
+    request.input('centrales_csv', sql.VarChar, parsed.centrales || '');
+    request.input('variables_csv', sql.VarChar, parsed.variables || '');
+    request.input('all_centrales', sql.Bit, parsed.centrales ? 0 : 1);
+    request.input('all_vars', sql.Bit, parsed.variables ? 0 : 1);
 
     const base = `
       WITH fechas AS (
@@ -404,26 +435,36 @@ router.get('/centrales/series', async (req, res) => {
 
     const result = await request.query(query);
     res.json(formatData(result.recordset));
-  } catch (err) { formatError(res, err); }
+  } catch (err) { next(err); }
 });
 
 // --- CANALES ---
-router.get('/canales/series', async (req, res) => {
-  const { fecha_ini, fecha_fin, canales } = req.query;
-  const dr = requireDateRange(req, res);
+router.get('/canales/series', async (req, res, next) => {
+  const parsed = validate(
+    z.object({
+      fecha_ini: dateSchema,
+      fecha_fin: dateSchema,
+      canales: csvNumberSchema.optional(),
+      granularity: z.enum(['day', 'week', 'month']).optional(),
+    }),
+    req.query,
+    next
+  );
+  if (!parsed) return;
+
+  const dr = requireDateRange(parsed.fecha_ini, parsed.fecha_fin, next);
   if (!dr) return;
-  if (!isCsvNums(canales)) return res.status(400).json({ ok: false, error: 'canales debe ser CSV numérico' });
 
   const rangeDays = daysBetweenInclusive(dr.d1, dr.d2);
-  const granularity = normalizeGranularity(req, rangeDays);
+  const granularity = normalizeGranularity({ query: parsed }, rangeDays);
 
   try {
     const pool = await poolPromise;
     const request = pool.request();
-    request.input('fecha_ini', sql.Date, fecha_ini);
-    request.input('fecha_fin', sql.Date, fecha_fin);
-    request.input('canales_csv', sql.VarChar, canales || '');
-    request.input('all_canales', sql.Bit, canales ? 0 : 1);
+    request.input('fecha_ini', sql.Date, parsed.fecha_ini);
+    request.input('fecha_fin', sql.Date, parsed.fecha_fin);
+    request.input('canales_csv', sql.VarChar, parsed.canales || '');
+    request.input('all_canales', sql.Bit, parsed.canales ? 0 : 1);
 
     const base = `
       WITH fechas AS (
@@ -497,17 +538,36 @@ router.get('/canales/series', async (req, res) => {
 
     const result = await request.query(query);
     res.json(formatData(result.recordset));
-  } catch (err) { formatError(res, err); }
+  } catch (err) { next(err); }
 });
 
 // --- INSIGHTS (GEMINI) ---
-router.post('/insights', async (req, res) => {
+router.post('/insights', async (req, res, next) => {
   try {
     const apiKey = process.env.GOOGLE_API_KEY;
-    if (!apiKey) return res.status(500).json({ ok: false, error: 'Missing GOOGLE_API_KEY' });
+    if (!apiKey) {
+      const err = new Error('Missing GOOGLE_API_KEY');
+      err.status = 500;
+      throw err;
+    }
 
-    const { prompt, context } = req.body || {};
-    if (!prompt) return res.status(400).json({ ok: false, error: 'prompt is required' });
+    const parsed = validate(
+      z.object({
+        prompt: z.string().min(1).max(4000).optional(),
+        context: z.record(z.any()).optional(),
+        filters: z.any().optional(),
+        contextData: z.any().optional(),
+      }),
+      req.body || {},
+      next
+    );
+    if (!parsed) return;
+
+    if (!parsed.prompt && !parsed.filters) {
+      const err = new Error('prompt is required');
+      err.status = 400;
+      throw err;
+    }
 
     const ai = new GoogleGenAI({ apiKey });
 
@@ -519,10 +579,10 @@ Si falta información, indica supuestos y pide datos específicos.
 
     const user = `
 PROMPT:
-${prompt}
+${parsed.prompt || 'Sin prompt proporcionado'}
 
 CONTEXTO (si aplica):
-${JSON.stringify(context || {}, null, 2)}
+${JSON.stringify(parsed.context || parsed.contextData || parsed.filters || {}, null, 2)}
     `.trim();
 
     const response = await ai.models.generateContent({
@@ -538,8 +598,7 @@ ${JSON.stringify(context || {}, null, 2)}
       },
     });
   } catch (err) {
-    console.error('Gemini Error:', err);
-    res.status(500).json({ ok: false, error: 'Failed to generate insights' });
+    next(err);
   }
 });
 
