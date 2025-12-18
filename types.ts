@@ -31,9 +31,31 @@ export interface RepresaKPI {
   PRECIP: number;
 }
 
+export interface InsightAnomaly {
+  represa: string;
+  fecha: string;
+  motivo: string;
+}
+
+export interface InsightData {
+  resumen: string;
+  hallazgos: string[];
+  riesgos: string[];
+  recomendaciones: string[];
+  anomalias?: InsightAnomaly[];
+  ['anomalías']?: InsightAnomaly[];
+  preguntasSugeridas: string[];
+}
+
 export interface InsightResponse {
-  analysis: string;
-  timestamp: string;
+  meta: {
+    fecha_ini: string;
+    fecha_fin: string;
+    represas: string[];
+    modelo: string;
+    cache: boolean;
+  };
+  insights: InsightData;
 }
 
 export interface MetaEntity {

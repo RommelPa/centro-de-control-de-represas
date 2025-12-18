@@ -1,6 +1,19 @@
 require('dotenv').config();
 const sql = require('mssql/msnodesqlv8');
 
+if (process.env.NODE_ENV === 'test') {
+  const fakeRequest = () => ({
+    input: () => fakeRequest(),
+    query: async () => ({ recordset: [] }),
+  });
+
+  module.exports = {
+    sql: { Date: 'Date', VarChar: 'VarChar', Bit: 'Bit' },
+    poolPromise: Promise.resolve({ request: fakeRequest }),
+  };
+  return;
+}
+
 const server = process.env.SQL_SERVER;      // ej: PC-PRACCOM\SQLEXPRESS
 const database = process.env.SQL_DATABASE;  // REPRESAS
 

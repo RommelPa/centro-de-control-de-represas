@@ -157,14 +157,17 @@ export const apiService = {
   },
 
   // ===== Insights =====
-  generateInsights: async (
-    filters: FilterState,
-    contextData: any
-  ): Promise<InsightResponse> => {
+  generateInsights: async (payload: {
+    fecha_ini: string;
+    fecha_fin: string;
+    represas: string[];
+    idioma?: 'es' | 'en';
+    nivelDetalle?: 'breve' | 'normal' | 'tecnico';
+  }): Promise<InsightResponse> => {
     const res = await fetch(`${API_URL}/insights`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ filters, contextData }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
@@ -182,6 +185,6 @@ export const apiService = {
       );
     }
 
-    return json.data as InsightResponse;
+    return json as InsightResponse;
   },
 };

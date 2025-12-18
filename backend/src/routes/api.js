@@ -2,10 +2,13 @@ const express = require('express');
 const { z } = require('zod');
 const router = express.Router();
 const { poolPromise, sql } = require('../db/pool');
-const { GoogleGenAI } = require('@google/genai');
+const aiService = require('../services/ai');
+const insightsData = require('../services/insights-data');
+const insightsRateLimit = require('../middleware/insights-rate-limit');
 
 // --- UTILS ---
 const formatData = (recordset) => ({ ok: true, data: recordset });
+const MAX_INSIGHTS_RANGE_DAYS = Number(process.env.INSIGHTS_MAX_RANGE_DAYS || 366);
 
 const isISODate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
 const parseISODate = (s) => {
@@ -75,6 +78,13 @@ const validate = (schema, data, next) => {
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const csvNumberSchema = z.string().regex(/^[0-9]+(,[0-9]+)*$/);
+const insightsSchema = z.object({
+  fecha_ini: dateSchema,
+  fecha_fin: dateSchema,
+  represas: z.array(z.string().min(1)).min(1),
+  idioma: z.enum(['es', 'en']).optional().default('es'),
+  nivelDetalle: z.enum(['breve', 'normal', 'tecnico']).optional().default('normal'),
+});
 
 // --- HEALTH ---
 router.get('/health', async (req, res, next) => {
@@ -542,59 +552,65 @@ router.get('/canales/series', async (req, res, next) => {
 });
 
 // --- INSIGHTS (GEMINI) ---
-router.post('/insights', async (req, res, next) => {
+router.post('/insights', insightsRateLimit, async (req, res, next) => {
+  const parsed = validate(insightsSchema, req.body || {}, next);
+  if (!parsed) return;
+
+  const dr = requireDateRange(parsed.fecha_ini, parsed.fecha_fin, next);
+  if (!dr) return;
+
+  const rangeDays = daysBetweenInclusive(dr.d1, dr.d2);
+  if (rangeDays > MAX_INSIGHTS_RANGE_DAYS) {
+    const err = new Error(`El rango máximo permitido es de ${MAX_INSIGHTS_RANGE_DAYS} días`);
+    err.status = 400;
+    return next(err);
+  }
+
+  const represasNumeric = (parsed.represas || [])
+    .map((r) => Number(r))
+    .filter((n) => Number.isFinite(n));
+
+  if (!represasNumeric.length) {
+    const err = new Error('represas no puede estar vacío');
+    err.status = 400;
+    return next(err);
+  }
+
   try {
-    const apiKey = process.env.GOOGLE_API_KEY;
-    if (!apiKey) {
-      const err = new Error('Missing GOOGLE_API_KEY');
-      err.status = 500;
-      throw err;
-    }
+    const dataset = await insightsData.buildInsightsDataset({
+      fecha_ini: parsed.fecha_ini,
+      fecha_fin: parsed.fecha_fin,
+      represas: represasNumeric,
+      rangeDays,
+    });
 
-    const parsed = validate(
-      z.object({
-        prompt: z.string().min(1).max(4000).optional(),
-        context: z.record(z.any()).optional(),
-        filters: z.any().optional(),
-        contextData: z.any().optional(),
-      }),
-      req.body || {},
-      next
-    );
-    if (!parsed) return;
-
-    if (!parsed.prompt && !parsed.filters) {
-      const err = new Error('prompt is required');
-      err.status = 400;
-      throw err;
-    }
-
-    const ai = new GoogleGenAI({ apiKey });
-
-    const system = `
-Eres un analista experto en operación de represas y generación hidroeléctrica.
-Responde en español, con viñetas claras y recomendaciones accionables.
-Si falta información, indica supuestos y pide datos específicos.
-    `.trim();
-
-    const user = `
-PROMPT:
-${parsed.prompt || 'Sin prompt proporcionado'}
-
-CONTEXTO (si aplica):
-${JSON.stringify(parsed.context || parsed.contextData || parsed.filters || {}, null, 2)}
-    `.trim();
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: [{ role: 'user', parts: [{ text: `${system}\n\n${user}` }] }],
+    const insights = await aiService.generateInsights({
+      stats: {
+        ...dataset.stats,
+        meta: dataset.meta,
+        idioma: parsed.idioma || 'es',
+        nivelDetalle: parsed.nivelDetalle || 'normal',
+      },
+      idioma: parsed.idioma || 'es',
+      nivelDetalle: parsed.nivelDetalle || 'normal',
     });
 
     res.json({
       ok: true,
-      data: {
-        analysis: response.text,
-        timestamp: new Date().toISOString(),
+      meta: {
+        fecha_ini: parsed.fecha_ini,
+        fecha_fin: parsed.fecha_fin,
+        represas: dataset.meta.represas.map((r) => r.nombre),
+        modelo: insights.modelo,
+        cache: false,
+      },
+      insights: {
+        resumen: insights.resumen,
+        hallazgos: insights.hallazgos,
+        riesgos: insights.riesgos,
+        recomendaciones: insights.recomendaciones,
+        anomalías: insights.anomalias || [],
+        preguntasSugeridas: insights.preguntasSugeridas || [],
       },
     });
   } catch (err) {

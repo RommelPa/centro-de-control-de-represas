@@ -27,16 +27,24 @@ Aplicación full-stack para monitoreo hidrológico y generación de insights con
 
 ## Configuración (.env Backend)
 
+Usa `backend/.env.example` como referencia rápida.
+
+Variables clave:
+- `API_KEY`: clave que el frontend envía en `x-api-key`.
+- `GEMINI_API_KEY`: clave de Google Gemini (no exponer en frontend).
+- `GEMINI_MODEL`: modelo (ej. `gemini-2.0-flash`).
+- `INSIGHTS_RATE_LIMIT_PER_MIN`: límite por minuto para `/insights`.
+- `INSIGHTS_MAX_RANGE_DAYS`: rango máximo de fechas permitido (por defecto 366).
+
+Ejemplo mínimo:
 ```env
 PORT=3000
 SQL_SERVER=localhost
 SQL_DATABASE=REPRESAS
-SQL_USER=sa
-SQL_PASSWORD=your_password
 SQL_ENCRYPT=false
 SQL_TRUST_CERT=true
 API_KEY=my-secret-key-123
-CORS_ORIGIN=http://localhost:5173
+GEMINI_API_KEY=tu-api-key
 ```
 
 ## Configuración (.env Frontend)
@@ -59,6 +67,36 @@ curl -H "x-api-key: my-secret-key-123" \
 **Generar Insights (IA):**
 ```bash
 curl -X POST -H "x-api-key: my-secret-key-123" -H "Content-Type: application/json" \
-  -d '{"filters": {"fechaIni": "2023-10-01", "fechaFin": "2023-10-07"}, "contextData": []}' \
+  -d '{
+    "fecha_ini": "2024-01-01",
+    "fecha_fin": "2024-01-15",
+    "represas": ["1", "2"],
+    "idioma": "es",
+    "nivelDetalle": "normal"
+  }' \
   http://localhost:3000/api/v1/insights
+```
+
+**Ejemplo de respuesta (placeholders):**
+```json
+{
+  "ok": true,
+  "meta": {
+    "fecha_ini": "2024-01-01",
+    "fecha_fin": "2024-01-15",
+    "represas": ["Represa A", "Represa B"],
+    "modelo": "gemini-2.0-flash",
+    "cache": false
+  },
+  "insights": {
+    "resumen": "Las represas muestran niveles estables con ligera alza de caudales.",
+    "hallazgos": ["Aumento de precipitación en la semana 2."],
+    "riesgos": ["Posible rebose si continúa la tendencia."],
+    "recomendaciones": ["Revisar compuertas y alertas tempranas."],
+    "anomalías": [
+      { "represa": "Represa A", "fecha": "2024-01-08", "motivo": "Cota fuera de rango esperado" }
+    ],
+    "preguntasSugeridas": ["¿Qué represa concentra mayor riesgo de rebose?"]
+  }
+}
 ```
