@@ -4,6 +4,14 @@ const VARIABLE_CODES = ['VOL_BRUTO', 'VOL_UTIL', 'COTA', 'DESCARGA', 'REBOSE', '
 const MAX_PAYLOAD_BYTES = Number(process.env.INSIGHTS_MAX_PAYLOAD_BYTES || 14000);
 const MAX_DAILY_ROWS = Number(process.env.INSIGHTS_MAX_DAILY_ROWS || 1500);
 
+const wrapDbError = (error) => {
+  const err = new Error('Error al consultar la base de datos');
+  err.status = 500;
+  err.code = 'DB_ERROR';
+  err.cause = error;
+  return err;
+};
+
 const normalizeGranularity = (rangeDays) => {
   if (rangeDays > 365) return 'month';
   if (rangeDays > 120) return 'week';
@@ -227,20 +235,24 @@ const summarize = (rows, rangeDays, fecha_ini, fecha_fin) => {
 
 const buildInsightsDataset = async ({ fecha_ini, fecha_fin, represas, rangeDays }) => {
   const represaIds = toNumberArray(represas);
-  const [names, daily] = await Promise.all([
-    fetchRepresaNames(represaIds),
-    fetchDailyData({ fecha_ini, fecha_fin, represaIds, granularity: normalizeGranularity(rangeDays) }),
-  ]);
+  try {
+    const [names, daily] = await Promise.all([
+      fetchRepresaNames(represaIds),
+      fetchDailyData({ fecha_ini, fecha_fin, represaIds, granularity: normalizeGranularity(rangeDays) }),
+    ]);
 
-  const stats = summarize(daily, rangeDays, fecha_ini, fecha_fin);
+    const stats = summarize(daily, rangeDays, fecha_ini, fecha_fin);
 
-  return {
-    stats,
-    meta: {
-      represas: names,
-      granularity: normalizeGranularity(rangeDays),
-    },
-  };
+    return {
+      stats,
+      meta: {
+        represas: names,
+        granularity: normalizeGranularity(rangeDays),
+      },
+    };
+  } catch (error) {
+    throw wrapDbError(error);
+  }
 };
 
 module.exports = { buildInsightsDataset };

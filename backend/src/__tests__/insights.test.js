@@ -122,3 +122,69 @@ test('POST /api/v1/insights returns insights with mocked services', async () => 
     server.close();
   }
 });
+
+test('POST /api/v1/insights rejects invalid date format and includes requestId', async () => {
+  const { server, url } = await startServer(app);
+  try {
+    const res = await fetch(`${url}/api/v1/insights`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': 'test-key' },
+      body: JSON.stringify({
+        fecha_ini: '2024/05/01',
+        fecha_fin: '2024-05-10',
+        represas: ['1'],
+      }),
+    });
+    const json = await res.json();
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(json.ok, false);
+    assert.ok(json.requestId);
+    assert.ok(res.headers.get('x-request-id'));
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/v1/insights returns 200 with mocked Gemini and requestId header', async () => {
+  const originalAI = aiService.generateInsights;
+  const originalData = dataService.buildInsightsDataset;
+
+  aiService.generateInsights = async () => ({
+    resumen: 'OK',
+    hallazgos: ['h1'],
+    riesgos: ['r1'],
+    recomendaciones: ['rec1'],
+    anomalias: [],
+    preguntasSugeridas: [],
+    modelo: 'mock-model-2',
+  });
+
+  dataService.buildInsightsDataset = async () => ({
+    stats: { rango: { fecha_ini: '2024-05-01', fecha_fin: '2024-05-10', dias: 10 }, represas: [], daily: [], truncado: false },
+    meta: { represas: [{ id_represa: 1, nombre: 'Demo 2' }], granularity: 'day' },
+  });
+
+  const { server, url } = await startServer(app);
+
+  try {
+    const res = await fetch(`${url}/api/v1/insights`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': 'test-key' },
+      body: JSON.stringify({
+        fecha_ini: '2024-05-01',
+        fecha_fin: '2024-05-10',
+        represas: ['1'],
+      }),
+    });
+
+    const json = await res.json();
+    assert.strictEqual(res.status, 200);
+    assert.ok(res.headers.get('x-request-id'));
+    assert.strictEqual(json.meta.modelo, 'mock-model-2');
+    assert.strictEqual(json.insights.resumen, 'OK');
+  } finally {
+    aiService.generateInsights = originalAI;
+    dataService.buildInsightsDataset = originalData;
+    server.close();
+  }
+});

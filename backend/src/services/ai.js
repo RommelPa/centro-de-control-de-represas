@@ -1,6 +1,6 @@
 const { GoogleGenAI } = require('@google/genai');
 
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const DEFAULT_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
 const MODEL_TIMEOUT_MS = Number(process.env.INSIGHTS_MODEL_TIMEOUT_MS || 20000);
 
 const responseSchema = {
@@ -39,30 +39,36 @@ const responseSchema = {
   required: ['resumen', 'hallazgos', 'riesgos', 'recomendaciones', 'anomalias', 'preguntasSugeridas'],
 };
 
-const parseJsonSafe = (text) => {
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    // try to extract first JSON block
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        return JSON.parse(match[0]);
-      } catch (e) {
-        return null;
-      }
-    }
-    return null;
+const buildError = (status, code, message, cause) => {
+  const err = new Error(message);
+  err.status = status;
+  err.code = code;
+  if (cause) err.cause = cause;
+  return err;
+};
+
+const normalizeGenAiError = (error) => {
+  const status = error?.status || error?.statusCode || error?.response?.status;
+  const message = error?.message || '';
+  if (!process.env.GEMINI_API_KEY) {
+    return buildError(401, 'INVALID_API_KEY', 'Gemini API key inválida o ausente', error);
   }
+
+  if (status === 401 || /api key/i.test(message)) {
+    return buildError(401, 'INVALID_API_KEY', 'Gemini API key inválida o ausente', error);
+  }
+
+  if (status === 429 || /rate limit|quota/i.test(message)) {
+    return buildError(429, 'RATE_LIMITED', 'Se alcanzó el límite de rate limit de Gemini', error);
+  }
+
+  return buildError(502, 'UPSTREAM_AI_ERROR', 'Error al generar insights con Gemini', error);
 };
 
 const generateInsights = async ({ stats, idioma = 'es', nivelDetalle = 'normal' }) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    const err = new Error('Missing GEMINI_API_KEY');
-    err.status = 500;
-    throw err;
+    throw buildError(401, 'INVALID_API_KEY', 'Gemini API key inválida o ausente');
   }
 
   const genAI = new GoogleGenAI({ apiKey });
@@ -91,15 +97,33 @@ Devuelve SIEMPRE JSON válido que cumpla con el esquema indicado. No uses otro f
   ].join('\n');
 
   const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(Object.assign(new Error('Modelo tardó demasiado'), { status: 500 })), MODEL_TIMEOUT_MS)
+    setTimeout(
+      () =>
+        reject(
+          buildError(
+            502,
+            'UPSTREAM_AI_ERROR',
+            `Gemini no respondió antes de ${MODEL_TIMEOUT_MS}ms`,
+          )
+        ),
+      MODEL_TIMEOUT_MS
+    )
   );
 
-  const result = await Promise.race([
-    model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    }),
-    timeoutPromise,
-  ]);
+  let result;
+  try {
+    result = await Promise.race([
+      model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      }),
+      timeoutPromise,
+    ]);
+  } catch (error) {
+    if (error.code && error.status) {
+      throw error;
+    }
+    throw normalizeGenAiError(error);
+  }
 
   const candidateText =
     typeof result?.response?.text === 'function'
@@ -108,13 +132,15 @@ Devuelve SIEMPRE JSON válido que cumpla con el esquema indicado. No uses otro f
           ?.map((p) => p.text || '')
           .join('') || '';
 
-  const text = candidateText || '';
-  const parsed = parseJsonSafe(text);
+  if (!candidateText) {
+    throw buildError(502, 'UPSTREAM_AI_ERROR', 'Gemini devolvió una respuesta vacía');
+  }
 
-  if (!parsed) {
-    const err = new Error('No se pudo interpretar la respuesta del modelo');
-    err.status = 500;
-    throw err;
+  let parsed;
+  try {
+    parsed = JSON.parse(candidateText);
+  } catch (error) {
+    throw buildError(502, 'UPSTREAM_AI_ERROR', 'Gemini devolvió JSON inválido', error);
   }
 
   // Normalize missing optional fields
