@@ -7,6 +7,7 @@ const requireApiKey = require('./middleware/auth');
 const apiRoutes = require('./routes/api');
 const errorHandler = require('./middleware/error-handler');
 const rateLimiter = require('./middleware/rate-limit');
+const requestContext = require('./middleware/request-context');
 
 const app = express();
 
@@ -40,9 +41,11 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
+app.use(requestContext);
 
 if (process.env.NODE_ENV !== 'test') {
-  app.use(morgan('combined'));
+  morgan.token('id', (req) => req.requestId || 'n/a');
+  app.use(morgan(':date[iso] [:id] :remote-addr :method :url :status :response-time ms'));
 }
 
 app.use(rateLimiter);

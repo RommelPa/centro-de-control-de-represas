@@ -8,6 +8,7 @@ process.env.RATE_LIMIT_MAX = '1';
 const requireApiKey = require('../middleware/auth');
 const errorHandler = require('../middleware/error-handler');
 const rateLimiter = require('../middleware/rate-limit');
+const requestContext = require('../middleware/request-context');
 
 const startServer = (app) =>
   new Promise((resolve) => {
@@ -51,6 +52,7 @@ test('API key middleware accepts valid key', async () => {
 
 test('Error handler normalizes server errors', async () => {
   const app = express();
+  app.use(requestContext);
   app.get('/boom', () => {
     throw new Error('boom');
   });
@@ -63,7 +65,9 @@ test('Error handler normalizes server errors', async () => {
     assert.strictEqual(res.status, 500);
     const json = await res.json();
     assert.strictEqual(json.ok, false);
-    assert.strictEqual(json.message, 'Internal Server Error');
+    assert.strictEqual(json.message, 'boom');
+    assert.ok(json.requestId);
+    assert.ok(res.headers.get('x-request-id'));
   } finally {
     server.close();
   }
