@@ -4,7 +4,7 @@ const assert = require('node:assert');
 process.env.NODE_ENV = 'test';
 process.env.API_KEY = 'test-key';
 process.env.GEMINI_API_KEY = 'fake-key';
-process.env.INSIGHTS_RATE_LIMIT_PER_MIN = '5';
+process.env.INSIGHTS_RATE_LIMIT_PER_MIN = '50';
 
 const { app } = require('../app');
 const aiService = require('../services/ai');
@@ -68,6 +68,59 @@ test('POST /api/v1/insights requires API key', async () => {
     });
     assert.strictEqual(res.status, 401);
   } finally {
+    server.close();
+  }
+});
+
+test('POST /api/v1/insights fails when Gemini key is missing', async () => {
+  const originalGemini = process.env.GEMINI_API_KEY;
+  const originalGoogle = process.env.GOOGLE_API_KEY;
+  const originalAI = aiService.generateInsights;
+  const originalData = dataService.buildInsightsDataset;
+
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.GOOGLE_API_KEY;
+
+  aiService.generateInsights = async () => {
+    throw new Error('AI should not be called without a key');
+  };
+  dataService.buildInsightsDataset = async () => {
+    throw new Error('Dataset should not be built without a key');
+  };
+
+  const { server, url } = await startServer(app);
+
+  try {
+    const res = await fetch(`${url}/api/v1/insights`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': 'test-key' },
+      body: JSON.stringify({
+        fecha_ini: '2024-05-01',
+        fecha_fin: '2024-05-10',
+        represas: ['1'],
+      }),
+    });
+
+    const json = await res.json();
+    assert.strictEqual(res.status, 503);
+    assert.strictEqual(json.ok, false);
+    assert.strictEqual(json.code, 'INVALID_API_KEY');
+    assert.strictEqual(json.message, 'Gemini API key inválida o ausente');
+    assert.ok(json.requestId);
+    assert.ok(res.headers.get('x-request-id'));
+  } finally {
+    aiService.generateInsights = originalAI;
+    dataService.buildInsightsDataset = originalData;
+    if (originalGemini) {
+      process.env.GEMINI_API_KEY = originalGemini;
+    } else {
+      delete process.env.GEMINI_API_KEY;
+    }
+    if (originalGoogle) {
+      process.env.GOOGLE_API_KEY = originalGoogle;
+    } else {
+      delete process.env.GOOGLE_API_KEY;
+    }
     server.close();
   }
 });

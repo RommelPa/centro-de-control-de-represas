@@ -1,4 +1,5 @@
 const { GoogleGenAI } = require('@google/genai');
+const { getGeminiApiKey } = require('../config/env');
 
 const DEFAULT_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
 const MODEL_TIMEOUT_MS = Number(process.env.INSIGHTS_MODEL_TIMEOUT_MS || 20000);
@@ -50,12 +51,12 @@ const buildError = (status, code, message, cause) => {
 const normalizeGenAiError = (error) => {
   const status = error?.status || error?.statusCode || error?.response?.status;
   const message = error?.message || '';
-  if (!process.env.GEMINI_API_KEY) {
-    return buildError(401, 'INVALID_API_KEY', 'Gemini API key inválida o ausente', error);
+  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
+    return buildError(503, 'INVALID_API_KEY', 'Gemini API key inválida o ausente', error);
   }
 
   if (status === 401 || /api key/i.test(message)) {
-    return buildError(401, 'INVALID_API_KEY', 'Gemini API key inválida o ausente', error);
+    return buildError(503, 'INVALID_API_KEY', 'Gemini API key inválida o ausente', error);
   }
 
   if (status === 429 || /rate limit|quota/i.test(message)) {
@@ -65,13 +66,10 @@ const normalizeGenAiError = (error) => {
   return buildError(502, 'UPSTREAM_AI_ERROR', 'Error al generar insights con Gemini', error);
 };
 
-const generateInsights = async ({ stats, idioma = 'es', nivelDetalle = 'normal' }) => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw buildError(401, 'INVALID_API_KEY', 'Gemini API key inválida o ausente');
-  }
+const generateInsights = async ({ stats, idioma = 'es', nivelDetalle = 'normal', apiKey }) => {
+  const resolvedApiKey = apiKey || getGeminiApiKey();
 
-  const genAI = new GoogleGenAI({ apiKey });
+  const genAI = new GoogleGenAI({ apiKey: resolvedApiKey });
   const model = genAI.getGenerativeModel({
     model: DEFAULT_MODEL,
     systemInstruction: `

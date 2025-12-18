@@ -29,10 +29,12 @@ Aplicación full-stack para monitoreo hidrológico y generación de insights con
 
 Usa `backend/.env.example` como referencia rápida.
 
+El backend carga dotenv buscando primero `.env` en el directorio donde se ejecuta el proceso y, si no existe, usa `backend/.env` automáticamente. Esto permite arrancar tanto con `cd backend && npm start` como con `node backend/src/server.js` desde la raíz del repo.
+
 Variables clave:
 - `API_KEY`: clave que el frontend envía en `x-api-key`.
-- `GEMINI_API_KEY`: clave de Google Gemini (no exponer en frontend).
-- `GEMINI_MODEL`: modelo (ej. `gemini-2.0-flash`).
+- `GEMINI_API_KEY`: clave de Google Gemini (no exponer en frontend). También se acepta `GOOGLE_API_KEY` como compatibilidad.
+- `GEMINI_MODEL`: modelo (ej. `gemini-2.5-flash`).
 - `INSIGHTS_RATE_LIMIT_PER_MIN`: límite por minuto para `/insights`.
 - `INSIGHTS_MAX_RANGE_DAYS`: rango máximo de fechas permitido (por defecto 366).
 
@@ -76,6 +78,25 @@ curl -X POST -H "x-api-key: my-secret-key-123" -H "Content-Type: application/jso
   }' \
   http://localhost:3000/api/v1/insights
 ```
+
+## Insights IA (Gemini)
+
+- **Dónde colocar la key (local):** usa `backend/.env` con `GEMINI_API_KEY` (o `GOOGLE_API_KEY` si ya la tienes definida). El backend detecta el archivo tanto si lo ejecutas desde `/backend` como desde la raíz del repo.
+- **Producción:** configura `GEMINI_API_KEY`, `GEMINI_MODEL` y las variables de límites (`INSIGHTS_RATE_LIMIT_PER_MIN`, `INSIGHTS_MAX_RANGE_DAYS`, etc.) como variables de entorno en tu proveedor (Docker/Kubernetes/Render/VM). No hardcodees la key.
+- **Ejecución local rápida:** crea `backend/.env`, luego:
+  ```bash
+  cd backend
+  npm install
+  npm start
+  ```
+- **Ejemplo de llamada sin exponer secretos:**
+  ```bash
+  curl -X POST \
+    -H "x-api-key: $API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"fecha_ini":"2024-01-01","fecha_fin":"2024-01-07","represas":["1","2"],"idioma":"es"}' \
+    http://localhost:3000/api/v1/insights
+  ```
 
 **Ejemplo de respuesta (placeholders):**
 ```json
