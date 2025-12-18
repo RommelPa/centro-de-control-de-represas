@@ -2,6 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const router = express.Router();
 const { poolPromise, sql } = require('../db/pool');
+const { getGeminiApiKey } = require('../config/env');
 const aiService = require('../services/ai');
 const insightsData = require('../services/insights-data');
 const insightsRateLimit = require('../middleware/insights-rate-limit');
@@ -577,6 +578,8 @@ router.post('/insights', insightsRateLimit, async (req, res, next) => {
   }
 
   try {
+    const apiKey = getGeminiApiKey();
+
     const dataset = await insightsData.buildInsightsDataset({
       fecha_ini: parsed.fecha_ini,
       fecha_fin: parsed.fecha_fin,
@@ -585,6 +588,7 @@ router.post('/insights', insightsRateLimit, async (req, res, next) => {
     });
 
     const insights = await aiService.generateInsights({
+      apiKey,
       stats: {
         ...dataset.stats,
         meta: dataset.meta,
